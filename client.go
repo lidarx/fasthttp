@@ -1343,7 +1343,9 @@ func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error)
 	resp.SkipBody = customSkipBody
 	resp.StreamBody = customStreamBody
 
-	req.URI().DisablePathNormalizing = c.DisablePathNormalizing
+	if req.URI().DisablePathNormalizing == false {
+		req.URI().DisablePathNormalizing = c.DisablePathNormalizing
+	}
 
 	userAgentOld := req.Header.UserAgent()
 	if len(userAgentOld) == 0 {
