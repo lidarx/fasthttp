@@ -2470,14 +2470,24 @@ func (h *RequestHeader) AppendBytes(dst []byte) []byte {
 	dst = append(dst, h.Protocol()...)
 	dst = append(dst, strCRLF...)
 
-	userAgent := h.UserAgent()
-	if len(userAgent) > 0 {
-		dst = appendHeaderLine(dst, strUserAgent, userAgent)
-	}
-
 	host := h.Host()
 	if len(host) > 0 {
 		dst = appendHeaderLine(dst, strHost, host)
+	}
+
+	// there is no need in h.collectCookies() here, since if cookies aren't collected yet,
+	// they all are located in h.h.
+	n := len(h.cookies)
+	if n > 0 {
+		dst = append(dst, strCookie...)
+		dst = append(dst, strColonSpace...)
+		dst = appendRequestCookieBytes(dst, h.cookies)
+		dst = append(dst, strCRLF...)
+	}
+
+	userAgent := h.UserAgent()
+	if len(userAgent) > 0 {
+		dst = appendHeaderLine(dst, strUserAgent, userAgent)
 	}
 
 	contentType := h.ContentType()
@@ -2508,16 +2518,6 @@ func (h *RequestHeader) AppendBytes(dst []byte) []byte {
 
 	if len(h.trailer) > 0 {
 		dst = appendHeaderLine(dst, strTrailer, appendArgsKeyBytes(nil, h.trailer, strCommaSpace))
-	}
-
-	// there is no need in h.collectCookies() here, since if cookies aren't collected yet,
-	// they all are located in h.h.
-	n := len(h.cookies)
-	if n > 0 {
-		dst = append(dst, strCookie...)
-		dst = append(dst, strColonSpace...)
-		dst = appendRequestCookieBytes(dst, h.cookies)
-		dst = append(dst, strCRLF...)
 	}
 
 	if h.ConnectionClose() {
