@@ -1545,9 +1545,7 @@ func (req *Request) Write(w *bufio.Writer) error {
 		uri := req.URI()
 		host := uri.Host()
 		if len(req.Header.Host()) == 0 {
-			if len(host) == 0 {
-				return errRequestHostRequired
-			} else {
+			if len(host) > 0 {
 				req.Header.SetHostBytes(host)
 			}
 		} else if !req.UseHostHeader {
@@ -1600,13 +1598,8 @@ func (req *Request) Write(w *bufio.Writer) error {
 	if err = req.Header.Write(w); err != nil {
 		return err
 	}
-	if hasBody {
+	if hasBody || len(body) > 0 {
 		_, err = w.Write(body)
-	} else if len(body) > 0 {
-		if req.secureErrorLogMessage {
-			return fmt.Errorf("non-zero body for non-POST request")
-		}
-		return fmt.Errorf("non-zero body for non-POST request. body=%q", body)
 	}
 	return err
 }
