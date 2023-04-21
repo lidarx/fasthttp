@@ -1,8 +1,8 @@
 package fasthttp
 
 var (
-	defaultServerName  = "fasthttp"
-	defaultUserAgent   = "fasthttp"
+	defaultServerName  = "Nginx"
+	defaultUserAgent   = "Mozilla/5.0 AppleWebKit/537.36 Chrome/102.0.0.0 Safari/537.36"
 	defaultContentType = []byte("text/plain; charset=utf-8")
 )
 
