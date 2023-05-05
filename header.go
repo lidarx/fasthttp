@@ -2584,7 +2584,7 @@ func (h *ResponseHeader) parseTrailer(buf []byte) (int, error) {
 }
 
 func (h *RequestHeader) ignoreBody() bool {
-	return h.IsGet() || h.IsHead()
+	return h.IsGet() || h.IsHead() || h.disableNormalizing
 }
 
 func (h *RequestHeader) parse(buf []byte) (int, error) {
