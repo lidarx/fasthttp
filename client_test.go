@@ -3,8 +3,8 @@ package fasthttp
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
 	"fmt"
+	tls "github.com/refraction-networking/utls"
 	"io"
 	"net"
 	"net/url"

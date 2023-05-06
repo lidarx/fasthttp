@@ -2,9 +2,9 @@ package fasthttp
 
 import (
 	"bufio"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	tls "github.com/refraction-networking/utls"
 	"io"
 	"net"
 	"strings"
@@ -1991,7 +1991,11 @@ func tlsClientHandshake(rawConn net.Conn, tlsConfig *tls.Config, deadline time.T
 			rawConn.Close()
 		}
 	}()
-	conn := tls.Client(rawConn, tlsConfig)
+	conn := tls.UClient(rawConn, &tls.Config{
+		ServerName:         tlsConfig.ServerName,
+		InsecureSkipVerify: true,
+		MinVersion:         tlsConfig.MinVersion,
+	}, tls.HelloChrome_102)
 	err := conn.SetDeadline(deadline)
 	if err != nil {
 		return nil, err
