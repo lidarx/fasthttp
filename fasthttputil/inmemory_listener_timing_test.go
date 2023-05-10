@@ -1,7 +1,7 @@
 package fasthttputil_test
 
 import (
-	tls "github.com/refraction-networking/utls"
+	"crypto/tls"
 	"net"
 	"testing"
 

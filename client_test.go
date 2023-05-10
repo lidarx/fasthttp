@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	tls "github.com/refraction-networking/utls"
+	"github.com/lidarx/tls"
 	"io"
 	"net"
 	"net/url"

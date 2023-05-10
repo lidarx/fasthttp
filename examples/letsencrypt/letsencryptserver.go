@@ -1,7 +1,7 @@
 package main
 
 import (
-	tls "github.com/refraction-networking/utls"
+	"crypto/tls"
 	"net"
 
 	"github.com/valyala/fasthttp"

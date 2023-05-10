@@ -4,7 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	tls "github.com/refraction-networking/utls"
+	"github.com/lidarx/tls"
+
 	"io"
 	"net"
 	"strings"
@@ -1991,11 +1992,7 @@ func tlsClientHandshake(rawConn net.Conn, tlsConfig *tls.Config, deadline time.T
 			rawConn.Close()
 		}
 	}()
-	conn := tls.UClient(rawConn, &tls.Config{
-		ServerName:         tlsConfig.ServerName,
-		InsecureSkipVerify: true,
-		MinVersion:         tlsConfig.MinVersion,
-	}, tls.HelloChrome_102)
+	conn := tls.Client(rawConn, tlsConfig)
 	err := conn.SetDeadline(deadline)
 	if err != nil {
 		return nil, err

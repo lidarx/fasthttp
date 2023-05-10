@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	tls "github.com/refraction-networking/utls"
+	"github.com/lidarx/tls"
 	"io"
 	"log"
 	"mime/multipart"
