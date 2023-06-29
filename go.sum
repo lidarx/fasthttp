@@ -1,11 +1,6 @@
 github.com/andybalholm/brotli v1.0.5 h1:8uQZIdzKmjc/iuPu7O2ioW48L81FgatrcpfFmiq/cCs=
 github.com/andybalholm/brotli v1.0.5/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
-github.com/huamang/tls v1.0.3 h1:yC798/x7r8OixWE6TunS5p1OPM/njeIYyeBG6Svn1Tw=
-github.com/huamang/tls v1.0.3/go.mod h1:K2hqTvCnwXL4avpsSbO4ZpAQPyoAl6zNTrETE8tMUAc=
-github.com/klauspost/compress v1.16.3 h1:XuJt9zzcnaz6a16/OU53ZjWp/v7/42WcR5t2a0PcNQY=
-github.com/klauspost/compress v1.16.3/go.mod h1:ntbaceVETuRiXiv4DpjP66DpAtAGkEQskQzEyD//IeE=
-github.com/lidarx/tls v0.0.0-20230510151235-85d4b3622721 h1:zgxn3Q158R5Gpag/4AgYLBimpKcxV8/ZVLqP9ryMavk=
-github.com/lidarx/tls v0.0.0-20230510151235-85d4b3622721/go.mod h1:AGFmw1dkzwF5Nuj6NU2ISa4EYvACTb1niw5yXC+qnnk=
+github.com/klauspost/compress v1.16.5 h1:IFV2oUNUzZaz+XyusxpLzpzS8Pt5rh0Z16For/djlyI=
 github.com/lidarx/tls v0.0.0-20230510162658-b002c600017d h1:XmBcy1qSbPDwpkyFHnu/g5+eDF4cVzwO0hCPXgu8j7E=
 github.com/lidarx/tls v0.0.0-20230510162658-b002c600017d/go.mod h1:AGFmw1dkzwF5Nuj6NU2ISa4EYvACTb1niw5yXC+qnnk=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
