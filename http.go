@@ -1584,7 +1584,9 @@ func (req *Request) Write(w *bufio.Writer) error {
 		if err != nil {
 			return fmt.Errorf("error when marshaling multipart form: %w", err)
 		}
-		req.Header.SetMultipartFormBoundary(req.multipartFormBoundary)
+		if req.Header.ContentType() != nil {
+			req.Header.SetMultipartFormBoundary(req.multipartFormBoundary)
+		}
 	}
 
 	hasBody := false
