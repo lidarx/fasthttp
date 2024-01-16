@@ -71,7 +71,8 @@ type Request struct {
 	timeout time.Duration
 
 	// Use Host header (request.Header.SetHost) instead of the host from SetRequestURI, SetHost, or URI().SetHost
-	UseHostHeader bool
+	UseHostHeader          bool
+	UseContentLengthHeader bool
 }
 
 // Response represents HTTP response.
@@ -1079,6 +1080,7 @@ func (req *Request) Reset() {
 	req.resetSkipHeader()
 	req.timeout = 0
 	req.UseHostHeader = false
+	req.UseContentLengthHeader = false
 }
 
 func (req *Request) resetSkipHeader() {
@@ -1595,7 +1597,9 @@ func (req *Request) Write(w *bufio.Writer) error {
 	}
 	if len(body) != 0 || !req.Header.ignoreBody() {
 		hasBody = true
-		req.Header.SetContentLength(len(body))
+		if !req.UseContentLengthHeader {
+			req.Header.SetContentLength(len(body))
+		}
 	}
 	if err = req.Header.Write(w); err != nil {
 		return err

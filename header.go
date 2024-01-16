@@ -1291,7 +1291,7 @@ func (h *ResponseHeader) setSpecialHeader(key, value []byte) bool {
 	case 't':
 		if caseInsensitiveCompare(strTransferEncoding, key) {
 			// Transfer-Encoding is managed automatically.
-			return true
+			return false
 		} else if caseInsensitiveCompare(strTrailer, key) {
 			_ = h.SetTrailerBytes(value)
 			return true
@@ -1344,7 +1344,7 @@ func (h *RequestHeader) setSpecialHeader(key, value []byte) bool {
 	case 't':
 		if caseInsensitiveCompare(strTransferEncoding, key) {
 			// Transfer-Encoding is managed automatically.
-			return true
+			return false
 		} else if caseInsensitiveCompare(strTrailer, key) {
 			_ = h.SetTrailerBytes(value)
 			return true
