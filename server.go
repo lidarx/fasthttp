@@ -3,9 +3,9 @@ package fasthttp
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/lidarx/tls"
 	"io"
 	"log"
 	"mime/multipart"
