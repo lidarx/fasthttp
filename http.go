@@ -2255,7 +2255,10 @@ func writeChunk(w *bufio.Writer, b []byte) error {
 var ErrBodyTooLarge = errors.New("body size exceeds the given limit")
 
 func readBody(r *bufio.Reader, contentLength, maxBodySize int, dst []byte) ([]byte, error) {
-	result, err := appendBodyFixedSize(r, dst, max[int](contentLength, maxBodySize))
+	if maxBodySize < contentLength {
+		contentLength = maxBodySize
+	}
+	result, err := appendBodyFixedSize(r, dst, contentLength)
 	if err != nil {
 		return result, err
 	} else if maxBodySize > 0 && contentLength > maxBodySize {
