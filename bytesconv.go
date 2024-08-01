@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -35,7 +36,7 @@ func AppendHTMLEscape(dst []byte, s string) []byte {
 		case '\'':
 			sub = "&#39;" // "&#39;" is shorter than "&apos;" and apos was not in HTML until HTML5.
 		}
-		if len(sub) > 0 {
+		if sub != "" {
 			dst = append(dst, s[prev:i]...)
 			dst = append(dst, sub...)
 			prev = i + 1
@@ -73,15 +74,11 @@ func ParseIPv4(dst net.IP, ipStr []byte) (net.IP, error) {
 	if len(ipStr) == 0 {
 		return dst, errEmptyIPStr
 	}
-	if len(dst) < net.IPv4len {
+	if len(dst) < net.IPv4len || len(dst) > net.IPv4len {
 		dst = make([]byte, net.IPv4len)
 	}
 	copy(dst, net.IPv4zero)
-	dst = dst.To4()
-	if dst == nil {
-		// developer sanity-check
-		panic("BUG: dst must not be nil")
-	}
+	dst = dst.To4() // dst is always non-nil here
 
 	b := ipStr
 	for i := 0; i < 3; i++ {
@@ -131,21 +128,7 @@ func AppendUint(dst []byte, n int) []byte {
 		panic("BUG: int must be positive")
 	}
 
-	var b [20]byte
-	buf := b[:]
-	i := len(buf)
-	var q int
-	for n >= 10 {
-		i--
-		q = n / 10
-		buf[i] = '0' + byte(n-q*10)
-		n = q
-	}
-	i--
-	buf[i] = '0' + byte(n)
-
-	dst = append(dst, buf[i:]...)
-	return dst
+	return strconv.AppendUint(dst, uint64(n), 10)
 }
 
 // ParseUint parses uint from buf.
@@ -204,7 +187,7 @@ func ParseUfloat(buf []byte) (float64, error) {
 	}
 	b := buf
 	var v uint64
-	var offset = 1.0
+	offset := 1.0
 	var pointFound bool
 	for i, c := range b {
 		if c < '0' || c > '9' {

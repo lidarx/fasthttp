@@ -26,18 +26,18 @@ const (
 type ResponseHeader struct {
 	noCopy noCopy
 
-	disableNormalizing   bool
-	noHTTP11             bool
-	connectionClose      bool
-	noDefaultContentType bool
-	noDefaultDate        bool
-
-	statusCode            int
-	statusMessage         []byte
-	protocol              []byte
-	contentLength         int
-	contentLengthBytes    []byte
+	disableNormalizing    bool
+	noHTTP11              bool
+	connectionClose       bool
+	noDefaultContentType  bool
+	noDefaultDate         bool
 	secureErrorLogMessage bool
+
+	statusCode         int
+	statusMessage      []byte
+	protocol           []byte
+	contentLength      int
+	contentLengthBytes []byte
 
 	contentType     []byte
 	contentEncoding []byte
@@ -65,14 +65,15 @@ type RequestHeader struct {
 	noHTTP11             bool
 	connectionClose      bool
 	noDefaultContentType bool
+	disableSpecialHeader bool
 
 	// These two fields have been moved close to other bool fields
 	// for reducing RequestHeader object size.
 	cookiesCollected bool
 
+	secureErrorLogMessage bool
 	contentLength         int
 	contentLengthBytes    []byte
-	secureErrorLogMessage bool
 
 	method      []byte
 	requestURI  []byte
@@ -340,6 +341,18 @@ func (h *ResponseHeader) SetContentEncodingBytes(contentEncoding []byte) {
 	h.contentEncoding = append(h.contentEncoding[:0], contentEncoding...)
 }
 
+// addVaryBytes add value to the 'Vary' header if it's not included.
+func (h *ResponseHeader) addVaryBytes(value []byte) {
+	v := h.peek(strVary)
+	if len(v) == 0 {
+		// 'Vary' is not set
+		h.SetBytesV(HeaderVary, value)
+	} else if !bytes.Contains(v, value) {
+		// 'Vary' is set and not contains target value
+		h.SetBytesV(HeaderVary, append(append(v, ','), value...))
+	} // else: 'Vary' is set and contains target value
+}
+
 // Server returns Server header value.
 func (h *ResponseHeader) Server() []byte {
 	return h.server
@@ -357,6 +370,9 @@ func (h *ResponseHeader) SetServerBytes(server []byte) {
 
 // ContentType returns Content-Type header value.
 func (h *RequestHeader) ContentType() []byte {
+	if h.disableSpecialHeader {
+		return peekArgBytes(h.h, []byte(HeaderContentType))
+	}
 	return h.contentType
 }
 
@@ -526,6 +542,91 @@ func (h *ResponseHeader) AddTrailerBytes(trailer []byte) error {
 	return err
 }
 
+// validHeaderFieldByte returns true if c valid header field byte
+// as defined by RFC 7230.
+func validHeaderFieldByte(c byte) bool {
+	return c < 128 && validHeaderFieldByteTable[c] == 1
+}
+
+// validHeaderValueByte returns true if c valid header value byte
+// as defined by RFC 7230.
+func validHeaderValueByte(c byte) bool {
+	return validHeaderValueByteTable[c] == 1
+}
+
+// VisitHeaderParams calls f for each parameter in the given header bytes.
+// It stops processing when f returns false or an invalid parameter is found.
+// Parameter values may be quoted, in which case \ is treated as an escape
+// character, and the value is unquoted before being passed to value.
+// See: https://www.rfc-editor.org/rfc/rfc9110#section-5.6.6
+//
+// f must not retain references to key and/or value after returning.
+// Copy key and/or value contents before returning if you need retaining them.
+func VisitHeaderParams(b []byte, f func(key, value []byte) bool) {
+	for len(b) > 0 {
+		idxSemi := 0
+		for idxSemi < len(b) && b[idxSemi] != ';' {
+			idxSemi++
+		}
+		if idxSemi >= len(b) {
+			return
+		}
+		b = b[idxSemi+1:]
+		for len(b) > 0 && b[0] == ' ' {
+			b = b[1:]
+		}
+
+		n := 0
+		if len(b) == 0 || !validHeaderFieldByte(b[n]) {
+			return
+		}
+		n++
+		for n < len(b) && validHeaderFieldByte(b[n]) {
+			n++
+		}
+
+		if n >= len(b)-1 || b[n] != '=' {
+			return
+		}
+		param := b[:n]
+		n++
+
+		switch {
+		case validHeaderFieldByte(b[n]):
+			m := n
+			n++
+			for n < len(b) && validHeaderFieldByte(b[n]) {
+				n++
+			}
+			if !f(param, b[m:n]) {
+				return
+			}
+		case b[n] == '"':
+			foundEndQuote := false
+			escaping := false
+			n++
+			m := n
+			for ; n < len(b); n++ {
+				if b[n] == '"' && !escaping {
+					foundEndQuote = true
+					break
+				}
+				escaping = (b[n] == '\\' && !escaping)
+			}
+			if !foundEndQuote {
+				return
+			}
+			if !f(param, b[m:n]) {
+				return
+			}
+			n++
+		default:
+			return
+		}
+		b = b[n:]
+	}
+}
+
 // MultipartFormBoundary returns boundary part
 // from 'multipart/form-data; boundary=...' Content-Type.
 func (h *RequestHeader) MultipartFormBoundary() []byte {
@@ -570,6 +671,9 @@ func (h *RequestHeader) MultipartFormBoundary() []byte {
 
 // Host returns Host header value.
 func (h *RequestHeader) Host() []byte {
+	if h.disableSpecialHeader {
+		return peekArgBytes(h.h, []byte(HeaderHost))
+	}
 	return h.host
 }
 
@@ -585,6 +689,9 @@ func (h *RequestHeader) SetHostBytes(host []byte) {
 
 // UserAgent returns User-Agent header value.
 func (h *RequestHeader) UserAgent() []byte {
+	if h.disableSpecialHeader {
+		return peekArgBytes(h.h, []byte(HeaderUserAgent))
+	}
 	return h.userAgent
 }
 
@@ -879,6 +986,23 @@ func (h *RequestHeader) Len() int {
 	return n
 }
 
+// DisableSpecialHeader disables special header processing.
+// fasthttp will not set any special headers for you, such as Host, Content-Type, User-Agent, etc.
+// You must set everything yourself.
+// If RequestHeader.Read() is called, special headers will be ignored.
+// This can be used to control case and order of special headers.
+// This is generally not recommended.
+func (h *RequestHeader) DisableSpecialHeader() {
+	h.disableSpecialHeader = true
+}
+
+// EnableSpecialHeader enables special header processing.
+// fasthttp will send Host, Content-Type, User-Agent, etc headers for you.
+// This is suggested and enabled by default.
+func (h *RequestHeader) EnableSpecialHeader() {
+	h.disableSpecialHeader = false
+}
+
 // DisableNormalizing disables header names' normalization.
 //
 // By default all the header names are normalized by uppercasing
@@ -906,7 +1030,7 @@ func (h *RequestHeader) DisableNormalizing() {
 //   - conteNT-tYPE -> Content-Type
 //   - foo-bar-baz -> Foo-Bar-Baz
 //
-// This is enabled by default unless disabled using DisableNormalizing()
+// This is enabled by default unless disabled using DisableNormalizing().
 func (h *RequestHeader) EnableNormalizing() {
 	h.disableNormalizing = false
 }
@@ -938,7 +1062,7 @@ func (h *ResponseHeader) DisableNormalizing() {
 //   - conteNT-tYPE -> Content-Type
 //   - foo-bar-baz -> Foo-Bar-Baz
 //
-// This is enabled by default unless disabled using DisableNormalizing()
+// This is enabled by default unless disabled using DisableNormalizing().
 func (h *ResponseHeader) EnableNormalizing() {
 	h.disableNormalizing = false
 }
@@ -983,6 +1107,7 @@ func (h *RequestHeader) SetNoDefaultContentType(noDefaultContentType bool) {
 
 // Reset clears request header.
 func (h *RequestHeader) Reset() {
+	h.disableSpecialHeader = false
 	h.disableNormalizing = false
 	h.SetNoDefaultContentType(false)
 	h.resetSkipNormalize()
@@ -1256,19 +1381,20 @@ func (h *ResponseHeader) setSpecialHeader(key, value []byte) bool {
 
 	switch key[0] | 0x20 {
 	case 'c':
-		if caseInsensitiveCompare(strContentType, key) {
+		switch {
+		case caseInsensitiveCompare(strContentType, key):
 			h.SetContentTypeBytes(value)
 			return true
-		} else if caseInsensitiveCompare(strContentLength, key) {
+		case caseInsensitiveCompare(strContentLength, key):
 			if contentLength, err := parseContentLength(value); err == nil {
 				h.contentLength = contentLength
 				h.contentLengthBytes = append(h.contentLengthBytes[:0], value...)
 			}
 			return true
-		} else if caseInsensitiveCompare(strContentEncoding, key) {
+		case caseInsensitiveCompare(strContentEncoding, key):
 			h.SetContentEncodingBytes(value)
 			return true
-		} else if caseInsensitiveCompare(strConnection, key) {
+		case caseInsensitiveCompare(strConnection, key):
 			if bytes.Equal(strClose, value) {
 				h.SetConnectionClose()
 			} else {
@@ -1306,29 +1432,30 @@ func (h *ResponseHeader) setSpecialHeader(key, value []byte) bool {
 	return false
 }
 
-// setNonSpecial directly put into map i.e. not a basic header
-func (h *ResponseHeader) setNonSpecial(key []byte, value []byte) {
+// setNonSpecial directly put into map i.e. not a basic header.
+func (h *ResponseHeader) setNonSpecial(key, value []byte) {
 	h.h = setArgBytes(h.h, key, value, argsHasValue)
 }
 
 // setSpecialHeader handles special headers and return true when a header is processed.
 func (h *RequestHeader) setSpecialHeader(key, value []byte) bool {
-	if len(key) == 0 {
+	if len(key) == 0 || h.disableSpecialHeader {
 		return false
 	}
 
 	switch key[0] | 0x20 {
 	case 'c':
-		if caseInsensitiveCompare(strContentType, key) {
+		switch {
+		case caseInsensitiveCompare(strContentType, key):
 			h.SetContentTypeBytes(value)
 			return true
-		} else if caseInsensitiveCompare(strContentLength, key) {
+		case caseInsensitiveCompare(strContentLength, key):
 			if contentLength, err := parseContentLength(value); err == nil {
 				h.contentLength = contentLength
 				h.contentLengthBytes = append(h.contentLengthBytes[:0], value...)
 			}
 			return true
-		} else if caseInsensitiveCompare(strConnection, key) {
+		case caseInsensitiveCompare(strConnection, key):
 			if bytes.Equal(strClose, value) {
 				h.SetConnectionClose()
 			} else {
@@ -1336,7 +1463,7 @@ func (h *RequestHeader) setSpecialHeader(key, value []byte) bool {
 				h.setNonSpecial(key, value)
 			}
 			return true
-		} else if caseInsensitiveCompare(strCookie, key) {
+		case caseInsensitiveCompare(strCookie, key):
 			h.collectCookies()
 			h.cookies = parseRequestCookies(h.cookies, value)
 			return true
@@ -1364,8 +1491,8 @@ func (h *RequestHeader) setSpecialHeader(key, value []byte) bool {
 	return false
 }
 
-// setNonSpecial directly put into map i.e. not a basic header
-func (h *RequestHeader) setNonSpecial(key []byte, value []byte) {
+// setNonSpecial directly put into map i.e. not a basic header.
+func (h *RequestHeader) setNonSpecial(key, value []byte) {
 	h.h = setArgBytes(h.h, key, value, argsHasValue)
 }
 
@@ -1994,7 +2121,7 @@ func (h *ResponseHeader) tryRead(r *bufio.Reader, n int) error {
 		if err == bufio.ErrBufferFull {
 			if h.secureErrorLogMessage {
 				return &ErrSmallBuffer{
-					error: fmt.Errorf("error when reading response headers"),
+					error: errors.New("error when reading response headers"),
 				}
 			}
 			return &ErrSmallBuffer{
@@ -2046,7 +2173,7 @@ func (h *ResponseHeader) tryReadTrailer(r *bufio.Reader, n int) error {
 		if err == bufio.ErrBufferFull {
 			if h.secureErrorLogMessage {
 				return &ErrSmallBuffer{
-					error: fmt.Errorf("error when reading response trailer"),
+					error: errors.New("error when reading response trailer"),
 				}
 			}
 			return &ErrSmallBuffer{
@@ -2155,7 +2282,7 @@ func (h *RequestHeader) tryReadTrailer(r *bufio.Reader, n int) error {
 		if err == bufio.ErrBufferFull {
 			if h.secureErrorLogMessage {
 				return &ErrSmallBuffer{
-					error: fmt.Errorf("error when reading request trailer"),
+					error: errors.New("error when reading request trailer"),
 				}
 			}
 			return &ErrSmallBuffer{
@@ -2468,7 +2595,7 @@ func (h *RequestHeader) AppendBytes(dst []byte) []byte {
 	dst = append(dst, strCRLF...)
 
 	host := h.Host()
-	if len(host) > 0 {
+	if len(host) > 0 && !h.disableSpecialHeader {
 		dst = appendHeaderLine(dst, strHost, host)
 	}
 
@@ -2491,10 +2618,10 @@ func (h *RequestHeader) AppendBytes(dst []byte) []byte {
 	if !h.noDefaultContentType && len(contentType) == 0 && !h.ignoreBody() {
 		contentType = strDefaultContentType
 	}
-	if len(contentType) > 0 {
+	if len(contentType) > 0 && !h.disableSpecialHeader {
 		dst = appendHeaderLine(dst, strContentType, contentType)
 	}
-	if len(h.contentLengthBytes) > 0 {
+	if len(h.contentLengthBytes) > 0 && !h.disableSpecialHeader {
 		dst = appendHeaderLine(dst, strContentLength, h.contentLengthBytes)
 	}
 
@@ -2697,7 +2824,7 @@ func (h *ResponseHeader) parseFirstLine(buf []byte) (int, error) {
 	n := bytes.IndexByte(b, ' ')
 	if n < 0 {
 		if h.secureErrorLogMessage {
-			return 0, fmt.Errorf("cannot find whitespace in the first line of response")
+			return 0, errors.New("cannot find whitespace in the first line of response")
 		}
 		return 0, fmt.Errorf("cannot find whitespace in the first line of response %q", buf)
 	}
@@ -2714,7 +2841,7 @@ func (h *ResponseHeader) parseFirstLine(buf []byte) (int, error) {
 	}
 	if len(b) > n && b[n] != ' ' {
 		if h.secureErrorLogMessage {
-			return 0, fmt.Errorf("unexpected char at the end of status code")
+			return 0, errors.New("unexpected char at the end of status code")
 		}
 		return 0, fmt.Errorf("unexpected char at the end of status code. Response %q", buf)
 	}
@@ -2723,6 +2850,15 @@ func (h *ResponseHeader) parseFirstLine(buf []byte) (int, error) {
 	}
 
 	return len(buf) - len(bNext), nil
+}
+
+func isValidMethod(method []byte) bool {
+	for _, ch := range method {
+		if validMethodValueByteTable[ch] == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *RequestHeader) parseFirstLine(buf []byte) (int, error) {
@@ -2739,30 +2875,55 @@ func (h *RequestHeader) parseFirstLine(buf []byte) (int, error) {
 	n := bytes.IndexByte(b, ' ')
 	if n <= 0 {
 		if h.secureErrorLogMessage {
-			return 0, fmt.Errorf("cannot find http request method")
+			return 0, errors.New("cannot find http request method")
 		}
 		return 0, fmt.Errorf("cannot find http request method in %q", buf)
 	}
 	h.method = append(h.method[:0], b[:n]...)
+
+	if !isValidMethod(h.method) {
+		if h.secureErrorLogMessage {
+			return 0, errors.New("unsupported http request method")
+		}
+		return 0, fmt.Errorf("unsupported http request method %q in %q", h.method, buf)
+	}
+
 	b = b[n+1:]
 
-	protoStr := strHTTP11
 	// parse requestURI
 	n = bytes.LastIndexByte(b, ' ')
 	if n < 0 {
-		h.noHTTP11 = true
-		n = len(b)
-		protoStr = strHTTP10
+		return 0, fmt.Errorf("cannot find whitespace in the first line of request %q", buf)
 	} else if n == 0 {
 		if h.secureErrorLogMessage {
-			return 0, fmt.Errorf("requestURI cannot be empty")
+			return 0, errors.New("requestURI cannot be empty")
 		}
 		return 0, fmt.Errorf("requestURI cannot be empty in %q", buf)
-	} else if !bytes.Equal(b[n+1:], strHTTP11) {
-		h.noHTTP11 = true
-		protoStr = b[n+1:]
 	}
 
+	protoStr := b[n+1:]
+
+	// Follow RFCs 7230 and 9112 and require that HTTP versions match the following pattern: HTTP/[0-9]\.[0-9]
+	if len(protoStr) != len(strHTTP11) {
+		if h.secureErrorLogMessage {
+			return 0, fmt.Errorf("unsupported HTTP version %q", protoStr)
+		}
+		return 0, fmt.Errorf("unsupported HTTP version %q in %q", protoStr, buf)
+	}
+	if !bytes.HasPrefix(protoStr, strHTTP11[:5]) {
+		if h.secureErrorLogMessage {
+			return 0, fmt.Errorf("unsupported HTTP version %q", protoStr)
+		}
+		return 0, fmt.Errorf("unsupported HTTP version %q in %q", protoStr, buf)
+	}
+	if protoStr[5] < '0' || protoStr[5] > '9' || protoStr[7] < '0' || protoStr[7] > '9' {
+		if h.secureErrorLogMessage {
+			return 0, fmt.Errorf("unsupported HTTP version %q", protoStr)
+		}
+		return 0, fmt.Errorf("unsupported HTTP version %q in %q", protoStr, buf)
+	}
+
+	h.noHTTP11 = !bytes.Equal(protoStr, strHTTP11)
 	h.proto = append(h.proto[:0], protoStr...)
 	h.requestURI = append(h.requestURI[:0], b[:n]...)
 
@@ -2804,66 +2965,90 @@ func (h *ResponseHeader) parseHeaders(buf []byte) (int, error) {
 	var s headerScanner
 	s.b = buf
 	s.disableNormalizing = h.disableNormalizing
-	var err error
 	var kv *argsKV
+
 	for s.next() {
-		if len(s.key) > 0 {
-			switch s.key[0] | 0x20 {
-			case 'c':
-				if caseInsensitiveCompare(s.key, strContentType) {
-					h.contentType = append(h.contentType[:0], s.value...)
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strContentEncoding) {
-					h.contentEncoding = append(h.contentEncoding[:0], s.value...)
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strContentLength) {
-					if h.contentLength != -1 {
-						if h.contentLength, err = parseContentLength(s.value); err != nil {
-							h.contentLength = -2
-						} else {
-							h.contentLengthBytes = append(h.contentLengthBytes[:0], s.value...)
-						}
-					}
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strConnection) {
-					if bytes.Equal(s.value, strClose) {
-						h.connectionClose = true
-					} else {
-						h.connectionClose = false
-						h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
-					}
-					continue
-				}
-			case 's':
-				if caseInsensitiveCompare(s.key, strServer) {
-					h.server = append(h.server[:0], s.value...)
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strSetCookie) {
-					h.cookies, kv = allocArg(h.cookies)
-					kv.key = getCookieKey(kv.key, s.value)
-					kv.value = append(kv.value[:0], s.value...)
-					continue
-				}
-			case 't':
-				if caseInsensitiveCompare(s.key, strTransferEncoding) {
-					if len(s.value) > 0 && !bytes.Equal(s.value, strIdentity) {
-						h.contentLength = -1
-						h.h = setArgBytes(h.h, strTransferEncoding, strChunked, argsHasValue)
-					}
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strTrailer) {
-					err = h.SetTrailerBytes(s.value)
-					continue
-				}
-			}
-			h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
+		if len(s.key) == 0 {
+			h.connectionClose = true
+			return 0, fmt.Errorf("invalid header key %q", s.key)
 		}
+
+		for _, ch := range s.key {
+			if !validHeaderFieldByte(ch) {
+				h.connectionClose = true
+				return 0, fmt.Errorf("invalid header key %q", s.key)
+			}
+		}
+		for _, ch := range s.value {
+			if !validHeaderValueByte(ch) {
+				h.connectionClose = true
+				return 0, fmt.Errorf("invalid header value %q", s.value)
+			}
+		}
+
+		switch s.key[0] | 0x20 {
+		case 'c':
+			if caseInsensitiveCompare(s.key, strContentType) {
+				h.contentType = append(h.contentType[:0], s.value...)
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strContentEncoding) {
+				h.contentEncoding = append(h.contentEncoding[:0], s.value...)
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strContentLength) {
+				if h.contentLength != -1 {
+					var err error
+					h.contentLength, err = parseContentLength(s.value)
+					if err != nil {
+						h.contentLength = -2
+						h.connectionClose = true
+						return 0, err
+					}
+					h.contentLengthBytes = append(h.contentLengthBytes[:0], s.value...)
+				}
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strConnection) {
+				if bytes.Equal(s.value, strClose) {
+					h.connectionClose = true
+				} else {
+					h.connectionClose = false
+					h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
+				}
+				continue
+			}
+		case 's':
+			if caseInsensitiveCompare(s.key, strServer) {
+				h.server = append(h.server[:0], s.value...)
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strSetCookie) {
+				h.cookies, kv = allocArg(h.cookies)
+				kv.key = getCookieKey(kv.key, s.value)
+				kv.value = append(kv.value[:0], s.value...)
+				continue
+			}
+		case 't':
+			if caseInsensitiveCompare(s.key, strTransferEncoding) {
+				if len(s.value) > 0 && !bytes.Equal(s.value, strIdentity) {
+					h.contentLength = -1
+					h.h = setArgBytes(h.h, strTransferEncoding, strChunked, argsHasValue)
+				}
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strTrailer) {
+				err := h.SetTrailerBytes(s.value)
+				if err != nil {
+					h.connectionClose = true
+					return 0, err
+				}
+				continue
+			}
+		}
+		h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
 	}
+
 	if s.err != nil {
 		h.connectionClose = true
 		return 0, s.err
@@ -2882,90 +3067,120 @@ func (h *ResponseHeader) parseHeaders(buf []byte) (int, error) {
 		h.connectionClose = !hasHeaderValue(v, strKeepAlive)
 	}
 
-	return len(buf) - len(s.b), err
+	return len(buf) - len(s.b), nil
 }
 
 func (h *RequestHeader) parseHeaders(buf []byte) (int, error) {
 	h.contentLength = -2
 
+	contentLengthSeen := false
+
 	var s headerScanner
 	s.b = buf
 	s.disableNormalizing = h.disableNormalizing
-	var err error
+
 	for s.next() {
-		if len(s.key) > 0 {
-			// Spaces between the header key and colon are not allowed.
-			// See RFC 7230, Section 3.2.4.
-			if bytes.IndexByte(s.key, ' ') != -1 || bytes.IndexByte(s.key, '\t') != -1 {
-				err = fmt.Errorf("invalid header key %q", s.key)
+		if len(s.key) == 0 {
+			h.connectionClose = true
+			return 0, fmt.Errorf("invalid header key %q", s.key)
+		}
+
+		for _, ch := range s.key {
+			if !validHeaderFieldByte(ch) {
+				h.connectionClose = true
+				return 0, fmt.Errorf("invalid header key %q", s.key)
+			}
+		}
+		for _, ch := range s.value {
+			if !validHeaderValueByte(ch) {
+				h.connectionClose = true
+				return 0, fmt.Errorf("invalid header value %q", s.value)
+			}
+		}
+
+		if h.disableSpecialHeader {
+			h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
+			continue
+		}
+
+		switch s.key[0] | 0x20 {
+		case 'h':
+			if caseInsensitiveCompare(s.key, strHost) {
+				h.host = append(h.host[:0], s.value...)
 				continue
 			}
+		case 'u':
+			if caseInsensitiveCompare(s.key, strUserAgent) {
+				h.userAgent = append(h.userAgent[:0], s.value...)
+				continue
+			}
+		case 'c':
+			if caseInsensitiveCompare(s.key, strContentType) {
+				h.contentType = append(h.contentType[:0], s.value...)
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strContentLength) {
+				if contentLengthSeen {
+					h.connectionClose = true
+					return 0, errors.New("duplicate Content-Length header")
+				}
+				contentLengthSeen = true
 
-			switch s.key[0] | 0x20 {
-			case 'h':
-				if caseInsensitiveCompare(s.key, strHost) {
-					h.host = append(h.host[:0], s.value...)
-					continue
-				}
-			case 'u':
-				if caseInsensitiveCompare(s.key, strUserAgent) {
-					h.userAgent = append(h.userAgent[:0], s.value...)
-					continue
-				}
-			case 'c':
-				if caseInsensitiveCompare(s.key, strContentType) {
-					h.contentType = append(h.contentType[:0], s.value...)
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strContentLength) {
-					if h.contentLength != -1 {
-						var nerr error
-						if h.contentLength, nerr = parseContentLength(s.value); nerr != nil {
-							if err == nil {
-								err = nerr
-							}
-							h.contentLength = -2
-						} else {
-							h.contentLengthBytes = append(h.contentLengthBytes[:0], s.value...)
-						}
-					}
-					continue
-				}
-				if caseInsensitiveCompare(s.key, strConnection) {
-					if bytes.Equal(s.value, strClose) {
+				if h.contentLength != -1 {
+					var err error
+					h.contentLength, err = parseContentLength(s.value)
+					if err != nil {
+						h.contentLength = -2
 						h.connectionClose = true
-					} else {
-						h.connectionClose = false
-						h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
+						return 0, err
 					}
-					continue
+					h.contentLengthBytes = append(h.contentLengthBytes[:0], s.value...)
 				}
-			case 't':
-				if caseInsensitiveCompare(s.key, strTransferEncoding) {
-					if !bytes.Equal(s.value, strIdentity) {
-						h.contentLength = -1
-						h.h = setArgBytes(h.h, strTransferEncoding, strChunked, argsHasValue)
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strConnection) {
+				if bytes.Equal(s.value, strClose) {
+					h.connectionClose = true
+				} else {
+					h.connectionClose = false
+					h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
+				}
+				continue
+			}
+		case 't':
+			if caseInsensitiveCompare(s.key, strTransferEncoding) {
+				isIdentity := caseInsensitiveCompare(s.value, strIdentity)
+				isChunked := caseInsensitiveCompare(s.value, strChunked)
+
+				if !isIdentity && !isChunked {
+					h.connectionClose = true
+					if h.secureErrorLogMessage {
+						return 0, errors.New("unsupported Transfer-Encoding")
 					}
-					continue
+					return 0, fmt.Errorf("unsupported Transfer-Encoding: %q", s.value)
 				}
-				if caseInsensitiveCompare(s.key, strTrailer) {
-					if nerr := h.SetTrailerBytes(s.value); nerr != nil {
-						if err == nil {
-							err = nerr
-						}
-					}
-					continue
+
+				if isChunked {
+					h.contentLength = -1
+					h.h = setArgBytes(h.h, strTransferEncoding, strChunked, argsHasValue)
 				}
+				continue
+			}
+			if caseInsensitiveCompare(s.key, strTrailer) {
+				err := h.SetTrailerBytes(s.value)
+				if err != nil {
+					h.connectionClose = true
+					return 0, err
+				}
+				continue
 			}
 		}
 		h.h = appendArgBytes(h.h, s.key, s.value, argsHasValue)
 	}
-	if s.err != nil && err == nil {
-		err = s.err
-	}
-	if err != nil {
+
+	if s.err != nil {
 		h.connectionClose = true
-		return 0, err
+		return 0, s.err
 	}
 
 	if h.contentLength < 0 {
@@ -3021,8 +3236,6 @@ type headerScanner struct {
 	// hLen stores header subslice len
 	hLen int
 
-	disableNormalizing bool
-
 	// by checking whether the next line contains a colon or not to tell
 	// it's a header entry or a multi line value of current header entry.
 	// the side effect of this operation is that we know the index of the
@@ -3031,7 +3244,8 @@ type headerScanner struct {
 	nextColon   int
 	nextNewLine int
 
-	initialized bool
+	disableNormalizing bool
+	initialized        bool
 }
 
 func (s *headerScanner) next() bool {
@@ -3079,7 +3293,7 @@ func (s *headerScanner) next() bool {
 	s.key = s.b[:n]
 	normalizeHeaderKey(s.key, s.disableNormalizing)
 	n++
-	for len(s.b) > n && s.b[n] == ' ' {
+	for len(s.b) > n && (s.b[n] == ' ' || s.b[n] == '\t') {
 		n++
 		// the newline index is a relative index, and lines below trimmed `s.b` by `n`,
 		// so the relative newline index also shifted forward. it's safe to decrease
@@ -3133,13 +3347,14 @@ func (s *headerScanner) next() bool {
 	if n > 0 && s.value[n-1] == rChar {
 		n--
 	}
-	for n > 0 && s.value[n-1] == ' ' {
+	for n > 0 && (s.value[n-1] == ' ' || s.value[n-1] == '\t') {
 		n--
 	}
 	s.value = s.value[:n]
 	if isMultiLineValue {
 		s.value, s.b, s.hLen = normalizeHeaderValue(s.value, oldB, s.hLen)
 	}
+
 	return true
 }
 
@@ -3218,18 +3433,27 @@ func normalizeHeaderValue(ov, ob []byte, headerLength int) (nv, nb []byte, nhl i
 	}
 	write := 0
 	shrunk := 0
+	once := false
 	lineStart := false
 	for read := 0; read < length; read++ {
 		c := ov[read]
-		if c == rChar || c == nChar {
+		switch {
+		case c == rChar || c == nChar:
 			shrunk++
 			if c == nChar {
 				lineStart = true
+				once = false
 			}
 			continue
-		} else if lineStart && c == '\t' {
-			c = ' '
-		} else {
+		case lineStart && (c == '\t' || c == ' '):
+			if !once {
+				c = ' '
+				once = true
+			} else {
+				shrunk++
+				continue
+			}
+		default:
 			lineStart = false
 		}
 		nv[write] = c
@@ -3280,7 +3504,7 @@ func normalizeHeaderKey(b []byte, disableNormalizing bool) {
 	}
 }
 
-// removeNewLines will replace `\r` and `\n` with an empty space
+// removeNewLines will replace `\r` and `\n` with an empty space.
 func removeNewLines(raw []byte) []byte {
 	// check if a `\r` is present and save the position.
 	// if no `\r` is found, check if a `\n` is present.
@@ -3288,15 +3512,16 @@ func removeNewLines(raw []byte) []byte {
 	foundN := bytes.IndexByte(raw, nChar)
 	start := 0
 
-	if foundN != -1 {
+	switch {
+	case foundN != -1:
 		if foundR > foundN {
 			start = foundN
 		} else if foundR != -1 {
 			start = foundR
 		}
-	} else if foundR != -1 {
+	case foundR != -1:
 		start = foundR
-	} else {
+	default:
 		return raw
 	}
 

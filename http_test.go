@@ -3,11 +3,9 @@ package fasthttp
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -23,22 +21,14 @@ import (
 func TestInvalidTrailers(t *testing.T) {
 	t.Parallel()
 
-	if err := (&Response{}).Read(bufio.NewReader(bytes.NewReader([]byte{0x20, 0x30, 0x0a, 0x54, 0x72, 0x61, 0x6e, 0x73, 0x66, 0x65, 0x72, 0x2d, 0x45, 0x6e, 0x63, 0x6f, 0x64, 0x69, 0x6e, 0x67, 0x3a, 0xff, 0x0a, 0x0a, 0x30, 0x0d, 0x0a, 0x30}))); !errors.Is(err, io.EOF) {
+	if err := (&Response{}).Read(bufio.NewReader(strings.NewReader(" 0\nTransfer-Encoding:\xff\n\n0\r\n0"))); !errors.Is(err, io.EOF) {
 		t.Fatalf("%#v", err)
 	}
-	if err := (&Response{}).Read(bufio.NewReader(bytes.NewReader([]byte{0xff, 0x20, 0x0a, 0x54, 0x52, 0x61, 0x49, 0x4c, 0x65, 0x52, 0x3a, 0x2c, 0x0a, 0x0a}))); !errors.Is(err, errEmptyInt) {
+	if err := (&Response{}).Read(bufio.NewReader(strings.NewReader("\xff \nTRaILeR:,\n\n"))); !errors.Is(err, errEmptyInt) {
 		t.Fatal(err)
 	}
-	if err := (&Response{}).Read(bufio.NewReader(bytes.NewReader([]byte{0x54, 0x52, 0x61, 0x49, 0x4c, 0x65, 0x52, 0x3a, 0x2c, 0x0a, 0x0a}))); !strings.Contains(err.Error(), "cannot find whitespace in the first line of response") {
+	if err := (&Response{}).Read(bufio.NewReader(strings.NewReader("TRaILeR:,\n\n"))); !strings.Contains(err.Error(), "cannot find whitespace in the first line of response") {
 		t.Fatal(err)
-	}
-	if err := (&Request{}).Read(bufio.NewReader(bytes.NewReader([]byte{0xff, 0x20, 0x0a, 0x54, 0x52, 0x61, 0x49, 0x4c, 0x65, 0x52, 0x3a, 0x2c, 0x0a, 0x0a}))); !strings.Contains(err.Error(), "contain forbidden trailer") {
-		t.Fatal(err)
-	}
-
-	b, _ := base64.StdEncoding.DecodeString("tCAKIDoKCToKICAKCToKICAKCToKIAogOgoJOgogIAoJOgovIC8vOi4KOh0KVFJhSUxlUjo9HT09HQpUUmFJTGVSOicQAApUUmFJTGVSOj0gHSAKCT09HQoKOgoKCgo=")
-	if err := (&Request{}).Read(bufio.NewReader(bytes.NewReader(b))); !strings.Contains(err.Error(), "error when reading request headers: invalid header key") {
-		t.Fatalf("%#v", err)
 	}
 }
 
@@ -165,8 +155,8 @@ func testRequestCopyTo(t *testing.T, src *Request) {
 	var dst Request
 	src.CopyTo(&dst)
 
-	if !reflect.DeepEqual(*src, dst) { //nolint:govet
-		t.Fatalf("RequestCopyTo fail, src: \n%+v\ndst: \n%+v\n", *src, dst) //nolint:govet
+	if !reflect.DeepEqual(src, &dst) {
+		t.Fatalf("RequestCopyTo fail, src: \n%+v\ndst: \n%+v\n", src, &dst)
 	}
 }
 
@@ -174,8 +164,8 @@ func testResponseCopyTo(t *testing.T, src *Response) {
 	var dst Response
 	src.CopyTo(&dst)
 
-	if !reflect.DeepEqual(*src, dst) { //nolint:govet
-		t.Fatalf("ResponseCopyTo fail, src: \n%+v\ndst: \n%+v\n", *src, dst) //nolint:govet
+	if !reflect.DeepEqual(src, &dst) {
+		t.Fatalf("ResponseCopyTo fail, src: \n%+v\ndst: \n%+v\n", src, &dst)
 	}
 }
 
@@ -833,17 +823,15 @@ func TestUseHostHeader2(t *testing.T) {
 	req.Header.SetHost("SomeHost")
 	if err := client.DoTimeout(req, resp, 1*time.Second); err != nil {
 		t.Fatalf("DoTimeout returned an error '%v'", err)
-	} else {
-		if resp.StatusCode() != http.StatusOK {
-			t.Fatalf("DoTimeout: %v", resp.body)
-		}
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Fatalf("DoTimeout: %v", resp.body)
 	}
 	if err := client.Do(req, resp); err != nil {
 		t.Fatalf("DoTimeout returned an error '%v'", err)
-	} else {
-		if resp.StatusCode() != http.StatusOK {
-			t.Fatalf("Do: %q", resp.body)
-		}
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Fatalf("Do: %q", resp.body)
 	}
 }
 
@@ -1222,7 +1210,7 @@ func TestRequestReadGzippedBody(t *testing.T) {
 	if r.Header.ContentLength() != len(body) {
 		t.Fatalf("unexpected content-length: %d. Expecting %d", r.Header.ContentLength(), len(body))
 	}
-	if string(r.Body()) != string(body) {
+	if !bytes.Equal(r.Body(), body) {
 		t.Fatalf("unexpected body: %q. Expecting %q", r.Body(), body)
 	}
 
@@ -1335,7 +1323,7 @@ func TestRequestContinueReadBodyDisablePrereadMultipartForm(t *testing.T) {
 		t.Fatalf("The multipartForm of the Request must be nil")
 	}
 
-	if string(formData) != string(r.Body()) {
+	if !bytes.Equal(formData, r.Body()) {
 		t.Fatalf("The body given must equal the body in the Request")
 	}
 }
@@ -1370,7 +1358,7 @@ func TestResponseGzipStream(t *testing.T) {
 		fmt.Fprintf(w, "foo")
 		w.Flush()
 		time.Sleep(time.Millisecond)
-		_, _ = w.Write([]byte("barbaz"))
+		_, _ = w.WriteString("barbaz")
 		_ = w.Flush()
 		time.Sleep(time.Millisecond)
 		_, _ = fmt.Fprintf(w, "1234")
@@ -1392,11 +1380,11 @@ func TestResponseDeflateStream(t *testing.T) {
 		t.Fatalf("IsBodyStream must return false")
 	}
 	r.SetBodyStreamWriter(func(w *bufio.Writer) {
-		_, _ = w.Write([]byte("foo"))
+		_, _ = w.WriteString("foo")
 		_ = w.Flush()
 		_, _ = fmt.Fprintf(w, "barbaz")
 		_ = w.Flush()
-		_, _ = w.Write([]byte("1234"))
+		_, _ = w.WriteString("1234")
 		if err := w.Flush(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1559,7 +1547,7 @@ func TestRequestMultipartForm(t *testing.T) {
 		formData = testRequestMultipartForm(t, boundary, formData, 10)
 	}
 
-	// verify request unmarshalling / marshalling
+	// verify request unmarshaling / marshaling
 	s := "POST / HTTP/1.1\r\nHost: aaa\r\nContent-Type: multipart/form-data; boundary=foobar\r\nContent-Length: 213\r\n\r\n--foobar\r\nContent-Disposition: form-data; name=\"key_0\"\r\n\r\nvalue_0\r\n--foobar\r\nContent-Disposition: form-data; name=\"key_1\"\r\n\r\nvalue_1\r\n--foobar\r\nContent-Disposition: form-data; name=\"key_2\"\r\n\r\nvalue_2\r\n--foobar--\r\n"
 
 	var req Request
@@ -1969,28 +1957,6 @@ func testSetResponseBodyStreamChunked(t *testing.T, body string, trailer map[str
 	}
 }
 
-func TestRound2(t *testing.T) {
-	t.Parallel()
-
-	testRound2(t, 0, 0)
-	testRound2(t, 1, 1)
-	testRound2(t, 2, 2)
-	testRound2(t, 3, 4)
-	testRound2(t, 4, 4)
-	testRound2(t, 5, 8)
-	testRound2(t, 7, 8)
-	testRound2(t, 8, 8)
-	testRound2(t, 9, 16)
-	testRound2(t, 0x10001, 0x20000)
-	testRound2(t, math.MaxInt32-1, math.MaxInt32)
-}
-
-func testRound2(t *testing.T, n, expectedRound2 int) {
-	if round2(n) != expectedRound2 {
-		t.Fatalf("Unexpected round2(%d)=%d. Expected %d", n, round2(n), expectedRound2)
-	}
-}
-
 func TestRequestReadChunked(t *testing.T) {
 	t.Parallel()
 
@@ -2072,7 +2038,8 @@ func TestResponseReadWithoutBody(t *testing.T) {
 }
 
 func testResponseReadWithoutBody(t *testing.T, resp *Response, s string, skipBody bool,
-	expectedStatusCode, expectedContentLength int, expectedContentType string, expectedTrailer map[string]string) {
+	expectedStatusCode, expectedContentLength int, expectedContentType string, expectedTrailer map[string]string,
+) {
 	r := bytes.NewBufferString(s)
 	rb := bufio.NewReader(r)
 	resp.SkipBody = skipBody
@@ -2142,7 +2109,8 @@ func TestResponseSuccess(t *testing.T) {
 }
 
 func testResponseSuccess(t *testing.T, statusCode int, contentType, serverName, body string,
-	expectedStatusCode int, expectedContentType, expectedServerName string) {
+	expectedStatusCode int, expectedContentType, expectedServerName string,
+) {
 	var resp Response
 	resp.SetStatusCode(statusCode)
 	resp.Header.Set("Content-Type", contentType)
@@ -2237,7 +2205,7 @@ func testRequestSuccess(t *testing.T, method, requestURI, host, userAgent, body,
 	if string(req1.Header.Method()) != expectedMethod {
 		t.Fatalf("Unexpected method: %q. Expected %q", req1.Header.Method(), expectedMethod)
 	}
-	if len(requestURI) == 0 {
+	if requestURI == "" {
 		requestURI = "/"
 	}
 	if string(req1.Header.RequestURI()) != requestURI {
@@ -2312,7 +2280,6 @@ func TestResponseReadSuccess(t *testing.T) {
 	// chunked response with chunk extension
 	testResponseReadSuccess(t, resp, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\n\r\n3;ext\r\naaa\r\n0\r\nFoo6: bar6\r\n\r\n",
 		200, -1, "text/html", "aaa", map[string]string{"Foo6": "bar6"})
-
 }
 
 func TestResponseReadError(t *testing.T) {
@@ -2351,8 +2318,8 @@ func testResponseReadError(t *testing.T, resp *Response, response string) {
 }
 
 func testResponseReadSuccess(t *testing.T, resp *Response, response string, expectedStatusCode, expectedContentLength int,
-	expectedContentType, expectedBody string, expectedTrailer map[string]string) {
-
+	expectedContentType, expectedBody string, expectedTrailer map[string]string,
+) {
 	r := bytes.NewBufferString(response)
 	rb := bufio.NewReader(r)
 	err := resp.Read(rb)
@@ -2491,7 +2458,7 @@ func testRequestPostArgsError(t *testing.T, req *Request, s string) {
 		t.Fatalf("Unexpected error when reading %q: %v", s, err)
 	}
 	ss := req.PostArgs().String()
-	if len(ss) != 0 {
+	if ss != "" {
 		t.Fatalf("unexpected post args: %q. Expecting empty post args", ss)
 	}
 }
@@ -2588,7 +2555,7 @@ func TestWriteMultipartForm(t *testing.T) {
 	t.Parallel()
 
 	var w bytes.Buffer
-	s := strings.Replace(`--foo
+	s := strings.ReplaceAll(`--foo
 Content-Disposition: form-data; name="key"
 
 value
@@ -2598,7 +2565,7 @@ Content-Type: application/json
 
 {"foo": "bar"}
 --foo--
-`, "\n", "\r\n", -1)
+`, "\n", "\r\n")
 	mr := multipart.NewReader(strings.NewReader(s), "foo")
 	form, err := mr.ReadForm(1024)
 	if err != nil {
@@ -2691,8 +2658,8 @@ func TestRequestRawBodyCopyTo(t *testing.T) {
 }
 
 type testReader struct {
-	read    chan (int)
-	cb      chan (struct{})
+	read    chan int
+	cb      chan struct{}
 	onClose func() error
 }
 
@@ -2976,7 +2943,7 @@ func TestResponseBodyStream(t *testing.T) {
 			t.Fatalf("parse response find err: %v", err)
 		}
 		defer func() {
-			if err := response.closeBodyStream(); err != nil {
+			if err := response.closeBodyStream(nil); err != nil {
 				t.Fatalf("close body stream err: %v", err)
 			}
 		}()
@@ -3010,6 +2977,8 @@ func TestResponseBodyStream(t *testing.T) {
 		}
 	})
 	t.Run("http client", func(t *testing.T) {
+		t.Parallel()
+
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			if request.URL.Query().Get("chunked") == "true" {
 				for x := 0; x < 10; x++ {
@@ -3022,9 +2991,11 @@ func TestResponseBodyStream(t *testing.T) {
 			writer.Write([]byte(`hello world`)) //nolint:errcheck
 		}))
 
-		defer server.Close()
+		t.Cleanup(server.Close)
 
 		t.Run("normal request", func(t *testing.T) {
+			t.Parallel()
+
 			client := Client{StreamResponseBody: true}
 			resp := AcquireResponse()
 			request := AcquireRequest()
@@ -3042,7 +3013,9 @@ func TestResponseBodyStream(t *testing.T) {
 			}
 		})
 
-		t.Run("limit response body size size", func(t *testing.T) {
+		t.Run("limit response body size", func(t *testing.T) {
+			t.Parallel()
+
 			client := Client{StreamResponseBody: true, MaxResponseBodySize: 20}
 			resp := AcquireResponse()
 			request := AcquireRequest()
@@ -3063,6 +3036,8 @@ func TestResponseBodyStream(t *testing.T) {
 		})
 
 		t.Run("chunked", func(t *testing.T) {
+			t.Parallel()
+
 			client := Client{StreamResponseBody: true}
 			resp := AcquireResponse()
 			request := AcquireRequest()
@@ -3113,7 +3088,6 @@ func TestRequestMultipartFormPipeEmptyFormField(t *testing.T) {
 	var b bytes.Buffer
 	bw := bufio.NewWriter(&b)
 	err := writeBodyChunked(bw, pr)
-
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package fasthttp
 
@@ -11,7 +10,7 @@ import (
 	"testing"
 )
 
-// See issue #1232
+// See issue #1232.
 func TestRstConnResponseWhileSending(t *testing.T) {
 	const expectedStatus = http.StatusTeapot
 	const payload = "payload"
@@ -74,7 +73,7 @@ func TestRstConnResponseWhileSending(t *testing.T) {
 	}
 }
 
-// See issue #1232
+// See issue #1232.
 func TestRstConnClosedWithoutResponse(t *testing.T) {
 	const payload = "payload"
 

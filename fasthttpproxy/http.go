@@ -42,13 +42,33 @@ func FasthttpHTTPDialerTimeout(proxy string, timeout time.Duration) fasthttp.Dia
 	return func(addr string) (net.Conn, error) {
 		var conn net.Conn
 		var err error
-		if timeout == 0 {
-			conn, err = fasthttp.Dial(proxy)
+		start := time.Now()
+
+		if strings.HasPrefix(proxy, "[") {
+			// ipv6
+			if timeout == 0 {
+				conn, err = fasthttp.DialDualStack(proxy)
+			} else {
+				conn, err = fasthttp.DialDualStackTimeout(proxy, timeout)
+			}
 		} else {
-			conn, err = fasthttp.DialTimeout(proxy, timeout)
+			// ipv4
+			if timeout == 0 {
+				conn, err = fasthttp.Dial(proxy)
+			} else {
+				conn, err = fasthttp.DialTimeout(proxy, timeout)
+			}
 		}
+
 		if err != nil {
 			return nil, err
+		}
+
+		if timeout > 0 {
+			if err = conn.SetDeadline(start.Add(timeout)); err != nil {
+				conn.Close()
+				return nil, err
+			}
 		}
 
 		req := "CONNECT " + addr + " HTTP/1.1\r\nHost: " + addr + "\r\n"
@@ -58,6 +78,7 @@ func FasthttpHTTPDialerTimeout(proxy string, timeout time.Duration) fasthttp.Dia
 		req += "\r\n"
 
 		if _, err := conn.Write([]byte(req)); err != nil {
+			conn.Close()
 			return nil, err
 		}
 
@@ -73,6 +94,12 @@ func FasthttpHTTPDialerTimeout(proxy string, timeout time.Duration) fasthttp.Dia
 		if res.Header.StatusCode() != 200 {
 			conn.Close()
 			return nil, fmt.Errorf("could not connect to proxy: %s status code: %d", proxy, res.Header.StatusCode())
+		}
+		if timeout > 0 {
+			if err := conn.SetDeadline(time.Time{}); err != nil {
+				conn.Close()
+				return nil, err
+			}
 		}
 		return conn, nil
 	}

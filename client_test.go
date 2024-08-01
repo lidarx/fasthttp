@@ -3,8 +3,9 @@ package fasthttp
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"errors"
 	"fmt"
-	"github.com/lidarx/tls"
 	"io"
 	"net"
 	"net/url"
@@ -144,6 +145,50 @@ func TestHostClientNegativeTimeout(t *testing.T) {
 		t.Fatalf("expected ErrTimeout error got: %+v", err)
 	}
 	ln.Close()
+}
+
+func TestDoDeadlineRetry(t *testing.T) {
+	t.Parallel()
+
+	var tries atomic.Int32
+	done := make(chan struct{})
+
+	ln := fasthttputil.NewInmemoryListener()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				close(done)
+				break
+			}
+			tries.Add(1)
+			br := bufio.NewReader(c)
+			(&RequestHeader{}).Read(br)                      //nolint:errcheck
+			(&Request{}).readBodyStream(br, 0, false, false) //nolint:errcheck
+			if tries.Load() == 1 {
+				time.Sleep(time.Millisecond * 10)
+			} else {
+				time.Sleep(time.Millisecond * 200)
+			}
+			c.Close()
+		}
+	}()
+	c := &HostClient{
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+	}
+	req := AcquireRequest()
+	req.Header.SetMethod(MethodGet)
+	req.SetRequestURI("http://example.com")
+	if err := c.DoDeadline(req, nil, time.Now().Add(time.Millisecond*200)); err != ErrTimeout {
+		t.Fatalf("expected ErrTimeout error got: %+v", err)
+	}
+	ln.Close()
+	<-done
+	if tr := tries.Load(); tr != 2 {
+		t.Fatalf("expected 2 tries got %d", tr)
+	}
 }
 
 func TestPipelineClientIssue832(t *testing.T) {
@@ -415,7 +460,7 @@ func TestClientParseConn(t *testing.T) {
 		t.Fatalf("req RemoteAddr parse addr fail: %q, hope: %q", res.RemoteAddr().String(), host)
 	}
 
-	if !regexp.MustCompile(`^127\.0\.0\.1:[0-9]{4,5}$`).MatchString(res.LocalAddr().String()) {
+	if !regexp.MustCompile(`^127\.0\.0\.1:\d{4,5}$`).MatchString(res.LocalAddr().String()) {
 		t.Fatalf("res LocalAddr addr match fail: %q, hope match: %q", res.LocalAddr().String(), "^127.0.0.1:[0-9]{4,5}$")
 	}
 }
@@ -669,10 +714,12 @@ func TestClientHeaderCase(t *testing.T) {
 
 	code, body, err := c.Get(nil, "http://example.com")
 	if err != nil {
-		t.Error(err)
-	} else if code != 200 {
+		t.Fatal(err)
+	}
+	if code != 200 {
 		t.Errorf("expected status code 200 got %d", code)
-	} else if string(body) != "This is the data in the first chunk and this is the second one " {
+	}
+	if string(body) != "This is the data in the first chunk and this is the second one " {
 		t.Errorf("wrong body: %q", body)
 	}
 }
@@ -1547,6 +1594,10 @@ func TestClientFollowRedirects(t *testing.T) {
 				u := ctx.URI()
 				u.Update("/bar")
 				ctx.Redirect(u.String(), StatusFound)
+			case "/abc/*/123":
+				u := ctx.URI()
+				u.Update("/xyz/*/456")
+				ctx.Redirect(u.String(), StatusFound)
 			default:
 				ctx.Success("text/plain", ctx.Path())
 			}
@@ -1662,6 +1713,31 @@ func TestClientFollowRedirects(t *testing.T) {
 		}
 		if err != ErrTimeout {
 			t.Errorf("unexpected error: %v. Expecting %v", err, ErrTimeout)
+		}
+
+		ReleaseRequest(req)
+		ReleaseResponse(resp)
+	}
+
+	for i := 0; i < 10; i++ {
+		req := AcquireRequest()
+		resp := AcquireResponse()
+
+		req.SetRequestURI("http://xxx/abc/*/123")
+		req.URI().DisablePathNormalizing = true
+		req.DisableRedirectPathNormalizing = true
+
+		err := c.DoRedirects(req, resp, 16)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if statusCode := resp.StatusCode(); statusCode != StatusOK {
+			t.Fatalf("unexpected status code: %d", statusCode)
+		}
+
+		if body := string(resp.Body()); body != "/xyz/*/456" {
+			t.Fatalf("unexpected response %q. Expecting %q", body, "/xyz/*/456")
 		}
 
 		ReleaseRequest(req)
@@ -1931,9 +2007,8 @@ func TestClientNonIdempotentRetry(t *testing.T) {
 					s: "HTTP/1.1 345 OK\r\nContent-Type: foobar\r\nContent-Length: 7\r\n\r\n0123456",
 				}, nil
 			default:
-				t.Fatalf("unexpected number of dials: %d", dialsCount)
+				return nil, fmt.Errorf("unexpected number of dials: %d", dialsCount)
 			}
-			panic("unreachable")
 		},
 	}
 
@@ -1981,9 +2056,8 @@ func TestClientNonIdempotentRetry_BodyStream(t *testing.T) {
 					b: []byte("HTTP/1.1 345 OK\r\nContent-Type: foobar\r\n\r\n"),
 				}, nil
 			default:
-				t.Fatalf("unexpected number of dials: %d", dialsCount)
+				return nil, fmt.Errorf("unexpected number of dials: %d", dialsCount)
 			}
-			panic("unreachable")
 		},
 	}
 
@@ -2024,9 +2098,8 @@ func TestClientIdempotentRequest(t *testing.T) {
 					s: "HTTP/1.1 345 OK\r\nContent-Type: foobar\r\nContent-Length: 7\r\n\r\n0123456",
 				}, nil
 			default:
-				t.Fatalf("unexpected number of dials: %d", dialsCount)
+				return nil, fmt.Errorf("unexpected number of dials: %d", dialsCount)
 			}
-			panic("unreachable")
 		},
 	}
 
@@ -2080,9 +2153,8 @@ func TestClientRetryRequestWithCustomDecider(t *testing.T) {
 					s: "HTTP/1.1 345 OK\r\nContent-Type: foobar\r\nContent-Length: 7\r\n\r\n0123456",
 				}, nil
 			default:
-				t.Fatalf("unexpected number of dials: %d", dialsCount)
+				return nil, fmt.Errorf("unexpected number of dials: %d", dialsCount)
 			}
-			panic("unreachable")
 		},
 		RetryIf: func(req *Request) bool {
 			return req.URI().String() == "http://foobar/a/b"
@@ -2111,6 +2183,22 @@ func TestClientRetryRequestWithCustomDecider(t *testing.T) {
 	}
 }
 
+type TransportDemo struct {
+	br *bufio.Reader
+	bw *bufio.Writer
+}
+
+func (t TransportDemo) RoundTrip(hc *HostClient, req *Request, res *Response) (retry bool, err error) {
+	if err = req.Write(t.bw); err != nil {
+		return false, err
+	}
+	if err = t.bw.Flush(); err != nil {
+		return false, err
+	}
+	err = res.Read(t.br)
+	return err != nil, err
+}
+
 func TestHostClientTransport(t *testing.T) {
 	t.Parallel()
 
@@ -2131,23 +2219,13 @@ func TestHostClientTransport(t *testing.T) {
 
 	c := &HostClient{
 		Addr: "foobar",
-		Transport: func() TransportFunc {
+		Transport: func() RoundTripper {
 			c, _ := ln.Dial()
 
 			br := bufio.NewReader(c)
 			bw := bufio.NewWriter(c)
 
-			return func(req *Request, res *Response) error {
-				if err := req.Write(bw); err != nil {
-					return err
-				}
-
-				if err := bw.Flush(); err != nil {
-					return err
-				}
-
-				return res.Read(br)
-			}
+			return TransportDemo{br: br, bw: bw}
 		}(),
 	}
 
@@ -2180,7 +2258,7 @@ type writeErrorConn struct {
 }
 
 func (w *writeErrorConn) Write(p []byte) (int, error) {
-	return 1, fmt.Errorf("error")
+	return 1, errors.New("error")
 }
 
 func (w *writeErrorConn) Close() error {
@@ -2195,12 +2273,20 @@ func (w *writeErrorConn) RemoteAddr() net.Addr {
 	return nil
 }
 
+func (w *writeErrorConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (w *writeErrorConn) SetWriteDeadline(_ time.Time) error {
+	return nil
+}
+
 type readErrorConn struct {
 	net.Conn
 }
 
 func (r *readErrorConn) Read(p []byte) (int, error) {
-	return 0, fmt.Errorf("error")
+	return 0, errors.New("error")
 }
 
 func (r *readErrorConn) Write(p []byte) (int, error) {
@@ -2219,6 +2305,14 @@ func (r *readErrorConn) RemoteAddr() net.Addr {
 	return nil
 }
 
+func (r *readErrorConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (r *readErrorConn) SetWriteDeadline(_ time.Time) error {
+	return nil
+}
+
 type singleReadConn struct {
 	net.Conn
 	s string
@@ -2229,7 +2323,7 @@ func (r *singleReadConn) Read(p []byte) (int, error) {
 	if len(r.s) == r.n {
 		return 0, io.EOF
 	}
-	n := copy(p, []byte(r.s[r.n:]))
+	n := copy(p, r.s[r.n:])
 	r.n += n
 	return n, nil
 }
@@ -2247,6 +2341,14 @@ func (r *singleReadConn) LocalAddr() net.Addr {
 }
 
 func (r *singleReadConn) RemoteAddr() net.Addr {
+	return nil
+}
+
+func (r *singleReadConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (r *singleReadConn) SetWriteDeadline(_ time.Time) error {
 	return nil
 }
 
@@ -2279,6 +2381,14 @@ func (r *singleEchoConn) LocalAddr() net.Addr {
 }
 
 func (r *singleEchoConn) RemoteAddr() net.Addr {
+	return nil
+}
+
+func (r *singleEchoConn) SetReadDeadline(_ time.Time) error {
+	return nil
+}
+
+func (r *singleEchoConn) SetWriteDeadline(_ time.Time) error {
 	return nil
 }
 
@@ -2439,7 +2549,7 @@ func TestHostClientGet(t *testing.T) {
 	addr := "TestHostClientGet.unix"
 	s := startEchoServer(t, "unix", addr)
 	defer s.Stop()
-	c := createEchoClient(t, "unix", addr)
+	c := createEchoClient("unix", addr)
 
 	testHostClientGet(t, c, 100)
 }
@@ -2451,7 +2561,7 @@ func TestHostClientPost(t *testing.T) {
 	addr := "./TestHostClientPost.unix"
 	s := startEchoServer(t, "unix", addr)
 	defer s.Stop()
-	c := createEchoClient(t, "unix", addr)
+	c := createEchoClient("unix", addr)
 
 	testHostClientPost(t, c, 100)
 }
@@ -2463,7 +2573,7 @@ func TestHostClientConcurrent(t *testing.T) {
 	addr := "./TestHostClientConcurrent.unix"
 	s := startEchoServer(t, "unix", addr)
 	defer s.Stop()
-	c := createEchoClient(t, "unix", addr)
+	c := createEchoClient("unix", addr)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -2604,7 +2714,7 @@ type clientGetter interface {
 	Get(dst []byte, uri string) (int, []byte, error)
 }
 
-func createEchoClient(t *testing.T, network, addr string) *HostClient {
+func createEchoClient(network, addr string) *HostClient {
 	return &HostClient{
 		Addr: addr,
 		Dial: func(addr string) (net.Conn, error) {
@@ -2739,7 +2849,7 @@ func TestClientConfigureClientFailed(t *testing.T) {
 
 	c := &Client{
 		ConfigureClient: func(hc *HostClient) error {
-			return fmt.Errorf("failed to configure")
+			return errors.New("failed to configure")
 		},
 	}
 
@@ -2838,8 +2948,6 @@ func TestHostClientMaxConnWaitTimeoutSuccess(t *testing.T) {
 }
 
 func TestHostClientMaxConnWaitTimeoutError(t *testing.T) {
-	t.Parallel()
-
 	var (
 		emptyBodyCount uint8
 		ln             = fasthttputil.NewInmemoryListener()
@@ -2902,6 +3010,8 @@ func TestHostClientMaxConnWaitTimeoutError(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	time.Sleep(time.Millisecond * 200)
 
 	// Prevent a race condition with the conns cleaner that might still be running.
 	c.connsLock.Lock()
@@ -3028,14 +3138,18 @@ func TestHostClientMaxConnWaitTimeoutWithEarlierDeadline(t *testing.T) {
 	}
 }
 
+type TransportEmpty struct{}
+
+func (t TransportEmpty) RoundTrip(hc *HostClient, req *Request, res *Response) (retry bool, err error) {
+	return false, nil
+}
+
 func TestHttpsRequestWithoutParsedURL(t *testing.T) {
 	t.Parallel()
 
 	client := HostClient{
-		IsTLS: true,
-		Transport: func(r1 *Request, r2 *Response) error {
-			return nil
-		},
+		IsTLS:     true,
+		Transport: TransportEmpty{},
 	}
 
 	req := &Request{}
@@ -3090,6 +3204,8 @@ func TestHostClientErrConnPoolStrategyNotImpl(t *testing.T) {
 }
 
 func Test_AddMissingPort(t *testing.T) {
+	t.Parallel()
+
 	type args struct {
 		addr  string
 		isTLS bool
@@ -3144,6 +3260,226 @@ func Test_AddMissingPort(t *testing.T) {
 		t.Run(tt.want, func(t *testing.T) {
 			if got := AddMissingPort(tt.args.addr, tt.args.isTLS); got != tt.want {
 				t.Errorf("AddMissingPort() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+type TransportWrapper struct {
+	base  RoundTripper
+	count *int
+	t     *testing.T
+}
+
+func (tw *TransportWrapper) RoundTrip(hc *HostClient, req *Request, resp *Response) (bool, error) {
+	req.Header.Set("trace-id", "123")
+	tw.assertRequestLog(req.String())
+	retry, err := tw.transport().RoundTrip(hc, req, resp)
+	resp.Header.Set("trace-id", "124")
+	tw.assertResponseLog(resp.String())
+	*tw.count++
+	return retry, err
+}
+
+func (tw *TransportWrapper) transport() RoundTripper {
+	if tw.base == nil {
+		return DefaultTransport
+	}
+	return tw.base
+}
+
+func (tw *TransportWrapper) assertRequestLog(reqLog string) {
+	if !strings.Contains(reqLog, "Trace-Id: 123") {
+		tw.t.Errorf("request log should contains: %v", "Trace-Id: 123")
+	}
+}
+
+func (tw *TransportWrapper) assertResponseLog(respLog string) {
+	if !strings.Contains(respLog, "Trace-Id: 124") {
+		tw.t.Errorf("response log should contains: %v", "Trace-Id: 124")
+	}
+}
+
+func TestClientTransportEx(t *testing.T) {
+	sHTTP := startEchoServer(t, "tcp", "127.0.0.1:")
+	defer sHTTP.Stop()
+
+	sHTTPS := startEchoServerTLS(t, "tcp", "127.0.0.1:")
+	defer sHTTPS.Stop()
+
+	count := 0
+	c := &Client{
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+		ConfigureClient: func(hc *HostClient) error {
+			hc.Transport = &TransportWrapper{base: hc.Transport, count: &count, t: t}
+			return nil
+		},
+	}
+	// test transport
+	const loopCount = 4
+	const getCount = 20
+	const postCount = 10
+	for i := 0; i < loopCount; i++ {
+		addr := "http://" + sHTTP.Addr()
+		if i&1 != 0 {
+			addr = "https://" + sHTTPS.Addr()
+		}
+		// test get
+		testClientGet(t, c, addr, getCount)
+		// test post
+		testClientPost(t, c, addr, postCount)
+	}
+	roundTripCount := loopCount * (getCount + postCount)
+	if count != roundTripCount {
+		t.Errorf("round trip count should be: %v", roundTripCount)
+	}
+}
+
+func Test_getRedirectURL(t *testing.T) {
+	type args struct {
+		baseURL                string
+		location               []byte
+		disablePathNormalizing bool
+	}
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "Path normalizing enabled, no special characters in path",
+			args: args{
+				baseURL:                "http://foo.example.com/abc",
+				location:               []byte("http://bar.example.com/def"),
+				disablePathNormalizing: false,
+			},
+			want: "http://bar.example.com/def",
+		},
+		{
+			name: "Path normalizing enabled, special characters in path",
+			args: args{
+				baseURL:                "http://foo.example.com/abc/*/def",
+				location:               []byte("http://bar.example.com/123/*/456"),
+				disablePathNormalizing: false,
+			},
+			want: "http://bar.example.com/123/%2A/456",
+		},
+		{
+			name: "Path normalizing disabled, no special characters in path",
+			args: args{
+				baseURL:                "http://foo.example.com/abc",
+				location:               []byte("http://bar.example.com/def"),
+				disablePathNormalizing: true,
+			},
+			want: "http://bar.example.com/def",
+		},
+		{
+			name: "Path normalizing disabled, special characters in path",
+			args: args{
+				baseURL:                "http://foo.example.com/abc/*/def",
+				location:               []byte("http://bar.example.com/123/*/456"),
+				disablePathNormalizing: true,
+			},
+			want: "http://bar.example.com/123/*/456",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getRedirectURL(tt.args.baseURL, tt.args.location, tt.args.disablePathNormalizing); got != tt.want {
+				t.Errorf("getRedirectURL() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+type clientDoTimeOuter interface {
+	DoTimeout(req *Request, resp *Response, timeout time.Duration) error
+}
+
+func TestDialTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		client         clientDoTimeOuter
+		requestTimeout time.Duration
+		shouldFailFast bool
+	}{
+		{
+			name: "Client should fail after a millisecond due to request timeout",
+			client: &Client{
+				// should be ignored due to DialTimeout
+				Dial: func(addr string) (net.Conn, error) {
+					time.Sleep(time.Second)
+					return nil, errors.New("timeout")
+				},
+				// should be used
+				DialTimeout: func(addr string, timeout time.Duration) (net.Conn, error) {
+					time.Sleep(timeout)
+					return nil, errors.New("timeout")
+				},
+			},
+			requestTimeout: time.Millisecond,
+			shouldFailFast: true,
+		},
+		{
+			name: "Client should fail after a second due to no DialTimeout set",
+			client: &Client{
+				Dial: func(addr string) (net.Conn, error) {
+					time.Sleep(time.Second)
+					return nil, errors.New("timeout")
+				},
+			},
+			requestTimeout: time.Millisecond,
+			shouldFailFast: false,
+		},
+		{
+			name: "HostClient should fail after a millisecond due to request timeout",
+			client: &HostClient{
+				// should be ignored due to DialTimeout
+				Dial: func(addr string) (net.Conn, error) {
+					time.Sleep(time.Second)
+					return nil, errors.New("timeout")
+				},
+				// should be used
+				DialTimeout: func(addr string, timeout time.Duration) (net.Conn, error) {
+					time.Sleep(timeout)
+					return nil, errors.New("timeout")
+				},
+			},
+			requestTimeout: time.Millisecond,
+			shouldFailFast: true,
+		},
+		{
+			name: "HostClient should fail after a second due to no DialTimeout set",
+			client: &HostClient{
+				Dial: func(addr string) (net.Conn, error) {
+					time.Sleep(time.Second)
+					return nil, errors.New("timeout")
+				},
+			},
+			requestTimeout: time.Millisecond,
+			shouldFailFast: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Now()
+			err := tt.client.DoTimeout(&Request{}, &Response{}, tt.requestTimeout)
+			if err == nil {
+				t.Fatal("expected error (timeout)")
+			}
+			if tt.shouldFailFast {
+				if time.Since(start) > time.Second {
+					t.Fatal("expected timeout after a millisecond")
+				}
+			} else {
+				if time.Since(start) < time.Second {
+					t.Fatal("expected timeout after a second")
+				}
 			}
 		})
 	}
